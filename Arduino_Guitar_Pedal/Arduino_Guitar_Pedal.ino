@@ -1,7 +1,14 @@
 #include "dsp.h"
 
+// Uno has 2048 bytes of SRAM total. array[2000] alone worked fine before,
+// but the temporary Serial debug output below needs ~200 bytes of RX/TX
+// buffers, which doesn't fit alongside the full 2000-byte buffer. Trimmed
+// to leave real headroom for the stack while debugging (1850 only left
+// -18 bytes -- an outright overflow, not just a tight fit).
+#define BUFFER_SIZE 1600
+
 // create an array for the delay
-byte array[2000]; 
+byte array[BUFFER_SIZE];
 
 //define variables
 int j;
@@ -11,16 +18,22 @@ int value50;
 int value300;
 int value10000;
 int delayed;
+byte octavePrev;
+boolean octaveState;
+int lastMode = -1; // DEBUG: for detecting mode changes
 
 void setup() {
   setupIO();
-  
+  Serial.begin(9600); // DEBUG
+
   //set initial values
   j = 50;
   value50 = 50;
   value300 = 300;
   value10000 = 1000;
   delayed = 0;
+  octavePrev = 128;
+  octaveState = false;
 }
 
 void loop() {
@@ -61,7 +74,7 @@ void loop() {
     //  *************************
 
     if(mode == 9){
-      for(int i = 0; i < 2000; i ++) { // set up a loop    
+      for(int i = 0; i < BUFFER_SIZE; i ++) { // set up a loop
         //array[i] = array[i] + array[i - 1]; //removes noise and some delay
         output(left, array[i]);
         array[i] = analogRead(left);
@@ -75,7 +88,7 @@ void loop() {
     if(mode == 10){
       value10000 = fx * 10;  
       if(delayed > value10000) { 
-        for(int i = 0; i < 2000; i ++) { // set up a loop    
+        for(int i = 0; i < BUFFER_SIZE; i ++) { // set up a loop
           array[i] = array[i] + array[i - 1]; //removes noise and delay
           output(left, array[i]);
           array[i] = analogRead(left);
@@ -101,18 +114,24 @@ void loop() {
 
     }
     
-    //  ************************
-    //  ***YOUR AWESOME SOUND***
-    //  ************************
+
+    //  *******************
+    //  ***octave down***
+    //  *******************
     if(mode == 12){
-     for(int i = 0; i < 2000; i ++) { // set up a loop    
-        //array[i] = array[i] + array[i - 1]; //removes noise and some delay
-        output(left, array[i]+array[i-20]);
-        array[i] = analogRead(left);
+      byte input = analogRead(left);
+
+      // toggle a flip-flop each time the signal crosses the center point
+      // going upward -- flipping every other cycle halves the fundamental frequency
+      if(octavePrev < 128 && input >= 128) {
+        octaveState = !octaveState;
       }
-  
+      octavePrev = input;
+
+      byte level = 1 + ((float) fx / (float) 4);
+      output(left, octaveState ? level : 0);
     }
-    
+
 }
 
 void readKnobs(){
@@ -124,7 +143,16 @@ void readKnobs(){
   mode = mode / 75;
     
   //reads the effects pot to adjust
-  //the intensity of the effects above  
+  //the intensity of the effects above
   fx = analogRead(3);
 
+  // DEBUG: report mode/fx only when mode changes, so it doesn't
+  // spam the audio loop or slow down sample-rate-sensitive effects
+  if(mode != lastMode) {
+    Serial.print("mode: ");
+    Serial.print(mode);
+    Serial.print("  fx: ");
+    Serial.println(fx);
+    lastMode = mode;
+  }
 }
