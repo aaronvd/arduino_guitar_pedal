@@ -38,13 +38,20 @@ void loop() {
     // ***bitcrush**
     // *************
     if(mode == 6){
-      value300 = 1 + ((float) fx / (float) 3);        
-      if(delayed > value300) {  
+      value300 = 1 + ((float) fx / (float) 3);
+      if(delayed > value300) {
         byte input = analogRead(left);
-        input = (input >> 6 << 6);
+        // fx also sets how many low bits get zeroed (0 = full 8-bit/clean,
+        // 7 = crushed down to 1 bit), on top of the sample-rate reduction above.
+        // Cubing fx before scaling gives the low bit-depths (which sound far
+        // more drastic per step than the high ones) most of the knob's
+        // travel, instead of splitting it evenly and feeling touchy at one end.
+        long fxCubed = (long) fx * fx * fx;
+        byte bits = fxCubed * 7L / ((long) 1023 * 1023 * 1023);
+        input = (input >> bits) << bits;
         output(left, input);
         delayed = 0;
-       } 
+       }
        delayed++;
 
     }
