@@ -1,3 +1,4 @@
+#include <Arduino.h>
 #include "dsp.h"
 
 #define BUFFER_SIZE 2000
