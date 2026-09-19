@@ -1,11 +1,6 @@
 #include "dsp.h"
 
-// Uno has 2048 bytes of SRAM total. array[2000] alone worked fine before,
-// but the temporary Serial debug output below needs ~200 bytes of RX/TX
-// buffers, which doesn't fit alongside the full 2000-byte buffer. Trimmed
-// to leave real headroom for the stack while debugging (1850 only left
-// -18 bytes -- an outright overflow, not just a tight fit).
-#define BUFFER_SIZE 1600
+#define BUFFER_SIZE 2000
 
 // create an array for the delay
 byte array[BUFFER_SIZE];
@@ -20,11 +15,9 @@ int value10000;
 int delayed;
 byte octavePrev;
 boolean octaveState;
-int lastMode = -1; // DEBUG: for detecting mode changes
 
 void setup() {
   setupIO();
-  Serial.begin(9600); // DEBUG
 
   //set initial values
   j = 50;
@@ -137,22 +130,31 @@ void loop() {
 void readKnobs(){
   //read the rotary switch
   //and determine which effect is selected
-  //dividing by 75 ensures proper discrete values
-  //for if statements above
-  mode = analogRead(2);
-  mode = mode / 75;
+
+  // low-pass filter the raw switch reading so single-sample ADC noise
+  // doesn't jitter the value on its own
+  static int modeRawFiltered = 0;
+  modeRawFiltered += (analogRead(2) - modeRawFiltered) / 4;
+
+  // The 6 switch positions are NOT evenly spaced in raw ADC counts (measured:
+  // 502, 603, 680, 766, 836, 929 for modes 6, 7, 9, 10, 11, 12), so a fixed
+  // divisor doesn't reliably separate them -- thresholds below are set at
+  // the midpoint between each pair of measured positions instead.
+  if(modeRawFiltered < 552) {
+    mode = 6;
+  } else if(modeRawFiltered < 641) {
+    mode = 7;
+  } else if(modeRawFiltered < 723) {
+    mode = 9;
+  } else if(modeRawFiltered < 801) {
+    mode = 10;
+  } else if(modeRawFiltered < 882) {
+    mode = 11;
+  } else {
+    mode = 12;
+  }
     
   //reads the effects pot to adjust
   //the intensity of the effects above
   fx = analogRead(3);
-
-  // DEBUG: report mode/fx only when mode changes, so it doesn't
-  // spam the audio loop or slow down sample-rate-sensitive effects
-  if(mode != lastMode) {
-    Serial.print("mode: ");
-    Serial.print(mode);
-    Serial.print("  fx: ");
-    Serial.println(fx);
-    lastMode = mode;
-  }
 }
