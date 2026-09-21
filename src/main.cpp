@@ -1,7 +1,17 @@
 #include <Arduino.h>
 #include "dsp.h"
 
-#define BUFFER_SIZE 2000
+// shrunk from 2000 -- SRAM is tight enough on the Uno (2048 bytes total)
+// that this buffer alone was already overflowing it before the OTA Serial
+// listener was added; this leaves headroom for that plus the stack. Effect
+// of the smaller buffer: the Short Delay/Helicopter effects' max delay
+// length is proportionately shorter than before.
+#define BUFFER_SIZE 1600
+
+// spare GPIO wired to the base of an NPN transistor whose collector pulls
+// the Uno's RESET pin low, used to bootstrap wireless (HC-05) reprogramming
+// -- see HC05_BLUETOOTH_OTA_NOTES.md
+#define OTA_RESET_TRIGGER_PIN 7
 
 // shared scratch buffer for time-based effects (short delay, helicopter).
 // Only one effect runs per loop pass, so it's safe for them to share this
@@ -158,8 +168,32 @@ EffectFn findEffect(EffectId id) {
 
 int readSwitchPosition(); // 0-5
 
+// Watches incoming Serial bytes for avrdude's STK500 sync sequence and, on
+// a match, pulls RESET low via the transistor on OTA_RESET_TRIGGER_PIN --
+// this is what lets avrdude's own normal retry behavior bootstrap a
+// wireless upload over the HC-05 with no separate trigger protocol needed.
+// See HC05_BLUETOOTH_OTA_NOTES.md.
+void checkForOTAResetTrigger() {
+  static const uint8_t SYNC_TRIGGER[] = {0x30, 0x20}; // Cmnd_STK_GET_SYNC, Sync_CRC_EOP
+  static uint8_t matchIndex = 0;
+  while (Serial.available()) {
+    uint8_t b = Serial.read();
+    if (b == SYNC_TRIGGER[matchIndex]) {
+      matchIndex++;
+      if (matchIndex == sizeof(SYNC_TRIGGER)) {
+        pinMode(OTA_RESET_TRIGGER_PIN, OUTPUT);
+        digitalWrite(OTA_RESET_TRIGGER_PIN, HIGH);
+        while (true) {} // reset happens almost immediately
+      }
+    } else {
+      matchIndex = (b == SYNC_TRIGGER[0]) ? 1 : 0;
+    }
+  }
+}
+
 void setup() {
   setupIO();
+  Serial.begin(115200);
 
   for(int i = 0; i < 6; i++) {
     activeEffect[i] = findEffect(presetForPosition[i]);
@@ -167,6 +201,7 @@ void setup() {
 }
 
 void loop() {
+  checkForOTAResetTrigger();
   int position = readSwitchPosition();
   int fx = analogRead(3);
   activeEffect[position](fx);
