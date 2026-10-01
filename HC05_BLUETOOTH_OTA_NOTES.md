@@ -127,7 +127,15 @@ upload_port = COM<n>     ; the HC-05's paired *outgoing* COM port
 upload_speed = 115200    ; must match the HC-05's configured UART baud
 ```
 
-No `extra_scripts` needed — this is the whole config. Upload with:
+> **Linux/BlueZ caveat (found on the guitar-pedal project):** over
+> `/dev/rfcomm0`, avrdude itself proved unreliable. The link takes ~3 s to
+> come up after the port is opened, and even with the link held up, most
+> uploads died part-way with the bootloader resetting. A small custom
+> STK500 client (`scripts/bt_upload.py` in that repo, run as a PlatformIO
+> `upload_protocol = custom` command) was reliable and resumes from the
+> failed page. See that repo's `HC05_BRINGUP.md`.
+
+On Windows, no `extra_scripts` were needed — this is the whole config. Upload with:
 
 ```
 pio run -e <board>_bluetooth -t upload

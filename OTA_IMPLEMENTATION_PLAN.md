@@ -121,6 +121,10 @@ identified.)
 
 ## HC-05 one-time AT configuration (no code, done via serial terminal)
 
+> **Superseded:** with the wiring soldered in place, AT configuration is done
+> by the Uno itself via `src/hc05_config.cpp` -- follow
+> [HC05_BRINGUP.md](HC05_BRINGUP.md) instead of the steps below.
+
 Before wiring is buttoned up, configure the module (AT mode: hold KEY/EN high
 at power-up, talk at fixed 38400 baud):
 - `AT+ROLE=0` (slave)
