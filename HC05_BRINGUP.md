@@ -188,7 +188,7 @@ Part 2), but that means opening the enclosure. So follow these every time:
    ```
 2. **Keep every `loop()` pass short: well under 0.5 s.** The listener only
    runs between passes. The Short Delay effect's 1600-sample pass takes
-   about 0.2 s, which is fine. Never use a long `delay()`, a blocking
+   tens of milliseconds, which is fine. Never use a long `delay()`, a blocking
    `while` wait, or an effect that loops for seconds inside one pass.
 3. **Never use `Serial.print()` / `Serial.write()`.** The TX buffer is shrunk
    to 1 byte to save RAM, and any multi-byte print **hangs the sketch
