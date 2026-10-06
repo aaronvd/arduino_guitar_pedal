@@ -163,7 +163,7 @@ auto-wah.
 ```cpp
 enum EffectId { EFFECT_BITCRUSH, EFFECT_OVERDRIVE, ... };     // a name for each effect
 
-const Effect effectLibrary[] = {                              // id -> name -> function
+const Effect effectLibrary[] PROGMEM = {                      // id -> name -> function (in flash)
   { EFFECT_BITCRUSH, "Bitcrush", effect_bitcrush },
   ...
 };
@@ -179,6 +179,8 @@ EffectFn activeEffect[6];                                     // filled in at st
 - `findEffect()` resolves the names to function pointers once in `setup()`,
   so the loop just calls `activeEffect[position](fx)`, with no lookup per
   sample.
+- The library is stored in flash (`PROGMEM`) to save RAM, so `findEffect()`
+  reads it with `pgm_read_word()` / `pgm_read_ptr()` rather than directly.
 
 **Effect state lives in `static` locals.** For example, Bitcrush's
 `delayed` counter is declared inside the function, so it keeps its value
@@ -273,7 +275,7 @@ work, and why they track single notes well and chords badly.
    integers and shifts (`x >> 3` instead of `x / 8`), and precomputed tables
    in flash (`PROGMEM`) for things like sine waves.
 
-6. **RAM is nearly full.** 1811 of 2048 bytes are used, leaving 237 for the
+6. **RAM is nearly full.** 1721 of 2048 bytes are used, leaving 327 for the
    stack. Use the shared `array`, not new buffers. Put lookup tables in
    flash with `PROGMEM`. Check the `RAM:` line on every build.
 

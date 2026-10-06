@@ -201,7 +201,7 @@ Part 2), but that means opening the enclosure. So follow these every time:
    bytes in the background.
 6. **Check RAM on every build.** The build output shows
    `RAM: ... (used N bytes from 2048)`. Keep at least about 200 bytes free
-   for the stack. Currently 1811 are used, which leaves 237. Running out of
+   for the stack. Currently 1721 are used, which leaves 327. Running out of
    RAM crashes the sketch unpredictably, and that can kill the listener too.
 7. **Build and upload through `uno_bluetooth`** (or `uno`). Those envs carry
    the Serial-buffer build flags and exclude `hc05_config.cpp`. New `.cpp`
