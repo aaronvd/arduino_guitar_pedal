@@ -9,7 +9,8 @@
 // length is proportionately shorter than before.
 #define BUFFER_SIZE 1600
 
-// shared scratch buffer for time-based effects (short delay, helicopter).
+// shared scratch buffer for time-based effects (short delay, helicopter,
+// echo, stutter, reverse).
 // Only one effect runs per loop pass, so it's safe for them to share this
 // rather than each carrying its own 2000-byte buffer -- SRAM is far too
 // tight on the Uno for more than one copy of this.
@@ -30,6 +31,13 @@ enum EffectId {
   EFFECT_WAVEFOLDER,
   EFFECT_SQUARE_FUZZ,
   EFFECT_SINE_RING_MOD,
+  EFFECT_ECHO,
+  EFFECT_SWELL,
+  EFFECT_NOISE_GATE,
+  EFFECT_LOWPASS,
+  EFFECT_AUTO_WAH,
+  EFFECT_STUTTER,
+  EFFECT_REVERSE,
 };
 
 // ***************************
@@ -71,6 +79,28 @@ const int8_t SINE[64] PROGMEM = {
 int8_t sineStep(unsigned int &phase, unsigned int increment) {
   phase += increment;
   return (int8_t) pgm_read_byte(&SINE[phase >> 10]); // top 6 bits index the table
+}
+
+// Envelope follower: the smoothed loudness of a centred signal, 0..~512.
+// Rises at a rate set by attackShift and falls at releaseShift -- each is
+// a one-pole filter shift, so larger = slower (3 is a few samples, 9 is
+// tens of milliseconds). env16 is the caller's state, kept x16 for
+// precision so small changes aren't lost to rounding.
+int envelopeStep(int &env16, int x, byte attackShift, byte releaseShift) {
+  int target = abs(x) << 4;
+  env16 += (target - env16) >> (target > env16 ? attackShift : releaseShift);
+  return env16 >> 4;
+}
+
+// The shared buffer holds bytes, so buffered effects store centred samples
+// as signed 8-bit: the 10-bit value scaled down by 4, losing its 2 lowest
+// bits (inaudible next to the rest of the pedal's grit).
+void storeSample(int i, int x) {
+  array[i] = (byte) (int8_t) constrain(x >> 2, -128, 127);
+}
+
+int loadSample(int i) {
+  return (int8_t) array[i] << 2;
 }
 
 // *************
@@ -264,6 +294,171 @@ void effect_sineRingMod(int fx) {
   writeCentered((long) readCentered() * carrier >> 7);
 }
 
+//  **********
+//  ***echo***
+//  **********
+void effect_echo(int fx) {
+  static int i = 0;
+
+  // A circular buffer handling one sample per call (unlike Short Delay,
+  // which works through the whole buffer at once). Each slot holds the
+  // input from `length` samples ago plus half of what was there before --
+  // that feedback is what makes the echo repeat, each repeat half as loud.
+  // fx sets the delay time: 100..BUFFER_SIZE samples, roughly 10-200 ms
+  // depending on the real sample rate.
+  int length = 100 + (int) ((long) fx * (BUFFER_SIZE - 100) >> 10);
+  if(i >= length) i = 0;
+
+  int x = readCentered();
+  int delayed = loadSample(i);
+  storeSample(i, x + (delayed >> 1));
+  i++;
+  writeCentered((long) x + delayed);
+}
+
+//  ***********
+//  ***swell***
+//  ***********
+void effect_swell(int fx) {
+  static int fast16 = 0, slow16 = 0;
+  static unsigned int gain = 0; // 0..65535 = silent..full volume
+
+  // "Slow gear": each new note fades in instead of starting with a pluck,
+  // like a violin bow. A note's attack shows up as the fast envelope
+  // jumping well above the slow one; that restarts the fade from silence.
+  // The +10 keeps background noise from triggering it -- raise it if the
+  // pedal swells on its own, lower it if soft notes don't trigger.
+  int x = readCentered();
+  int fast = envelopeStep(fast16, x, 2, 5);
+  int slow = envelopeStep(slow16, x, 7, 7);
+  if(fast > 2 * slow + 10) gain = 0;
+
+  // fx sets the fade-in time: increment 82 (~0.1 s) down to 4 (~2 s)
+  unsigned int increment = 4 + ((1023 - fx) * 200L >> 10);
+  gain = (gain < 65535 - increment) ? gain + increment : 65535;
+
+  writeCentered((long) x * (gain >> 8) >> 8);
+}
+
+//  ****************
+//  ***noise gate***
+//  ****************
+void effect_noiseGate(int fx) {
+  static int env16 = 0;
+  static int gateGain = 0; // 0..256 = closed..open
+
+  // Mutes the output when the input's loudness drops below a threshold, so
+  // hum and hiss between notes go silent. The gate eases open in ~8 ms and
+  // closed in ~30 ms rather than switching instantly, which would click.
+  // fx sets the threshold: 0..127 counts of envelope.
+  int x = readCentered();
+  int env = envelopeStep(env16, x, 2, 9);
+  if(env > (fx >> 3)) {
+    gateGain = min(gateGain + 4, 256);
+  } else if(gateGain > 0) {
+    gateGain--;
+  }
+  writeCentered((long) x * gateGain >> 8);
+}
+
+//  **************
+//  ***low-pass***
+//  **************
+void effect_lowpass(int fx) {
+  static long y16 = 0; // filter output, x16 for precision
+
+  // One-pole low-pass filter -- a tone control. Each sample, the output
+  // moves a fraction a/256 of the way toward the input: small a = slow to
+  // follow = only low frequencies get through. fx sets a (squared so the
+  // dark end gets more of the knob): 3..256, roughly 15 Hz up to no
+  // filtering at all.
+  int a = min(3 + (int) (((long) fx * fx) >> 12), 256);
+  y16 += ((((long) readCentered() << 4) - y16) * a) >> 8;
+  writeCentered(y16 >> 4);
+}
+
+//  **************
+//  ***auto-wah***
+//  **************
+void effect_autoWah(int fx) {
+  static int env16 = 0;
+  static long low = 0, band = 0;
+  const long DAMPING = 1024; // 1/Q in Q12 (Q = 4) -- lower = more "quack"
+
+  // A resonant band-pass filter (a Chamberlin state-variable filter, in
+  // fixed point: 4096 = 1.0) whose centre frequency follows the envelope,
+  // so picking harder opens the filter, like rocking a wah pedal forward.
+  // fx sets the sensitivity: how far a given loudness moves the filter.
+  int x = readCentered();
+  int env = envelopeStep(env16, x, 3, 8);
+
+  // f = 2*sin(pi * centre / sampleRate) in Q12: 900 is ~280 Hz and 4000
+  // ~1.3 kHz at 8 kHz -- capped there because this filter goes unstable
+  // as f approaches 2 - DAMPING
+  long f = min(900 + ((long) env * fx >> 7), 4000L);
+  low += f * band >> 12;
+  long high = x - low - (DAMPING * band >> 12);
+  band += f * high >> 12;
+  writeCentered(band >> 1); // resonance makes the band-pass output loud
+}
+
+//  *************
+//  ***stutter***
+//  *************
+void effect_stutter(int fx) {
+  const byte REPEATS = 3;
+  static int i = 0;
+  static byte pass = 0; // 0 = recording (live), 1..REPEATS = replaying
+
+  // Records a short chunk while passing the live signal through, then
+  // replays that chunk REPEATS times, then records the next one -- a
+  // glitchy, stuttering repeat. fx sets the chunk length: 50..BUFFER_SIZE
+  // samples. Short chunks buzz like a granular synth; long ones stutter.
+  int length = 50 + (int) ((long) fx * (BUFFER_SIZE - 50) >> 10);
+  if(i >= length) {
+    i = 0;
+    pass = (pass + 1) % (REPEATS + 1);
+  }
+
+  int x = readCentered(); // read even while replaying, to keep timing even
+  if(pass == 0) {
+    storeSample(i, x);
+    writeCentered(x);
+  } else {
+    writeCentered(loadSample(i));
+  }
+  i++;
+}
+
+//  *************
+//  ***reverse***
+//  *************
+void effect_reverse(int fx) {
+  const int HALF = BUFFER_SIZE / 2;
+  static int i = 0;
+  static bool recordIntoSecondHalf = false;
+
+  // Ping-pongs between the buffer's two halves: one records the live input
+  // while the other plays the previous chunk backwards, then they swap.
+  // Mixed with the dry signal so notes stay recognisable. Chunks can only
+  // be up to half the buffer (~0.1 s), so this is a short, swirly reverse
+  // rather than a long backwards swell. fx sets the chunk length:
+  // 100..HALF samples.
+  int length = 100 + (int) ((long) fx * (HALF - 100) >> 10);
+  if(i >= length) {
+    i = 0;
+    recordIntoSecondHalf = !recordIntoSecondHalf;
+  }
+
+  int recordStart = recordIntoSecondHalf ? HALF : 0;
+  int playStart = recordIntoSecondHalf ? 0 : HALF;
+  int x = readCentered();
+  storeSample(recordStart + i, x);
+  int reversed = loadSample(playStart + length - 1 - i);
+  i++;
+  writeCentered((x >> 1) + reversed);
+}
+
 struct Effect {
   EffectId id;
   char name[14]; // stored inline (not a pointer) so it lives in flash too
@@ -287,17 +482,24 @@ const Effect effectLibrary[] PROGMEM = {
   { EFFECT_WAVEFOLDER,    "Wavefolder",    effect_wavefolder },
   { EFFECT_SQUARE_FUZZ,   "Square Fuzz",   effect_squareFuzz },
   { EFFECT_SINE_RING_MOD, "Sine Ring Mod", effect_sineRingMod },
+  { EFFECT_ECHO,          "Echo",          effect_echo },
+  { EFFECT_SWELL,         "Swell",         effect_swell },
+  { EFFECT_NOISE_GATE,    "Noise Gate",    effect_noiseGate },
+  { EFFECT_LOWPASS,       "Low-pass",      effect_lowpass },
+  { EFFECT_AUTO_WAH,      "Auto-Wah",      effect_autoWah },
+  { EFFECT_STUTTER,       "Stutter",       effect_stutter },
+  { EFFECT_REVERSE,       "Reverse",       effect_reverse },
 };
 const int NUM_EFFECTS = sizeof(effectLibrary) / sizeof(effectLibrary[0]);
 
 // which effect is assigned to each of the 6 switch positions -- edit by
 // name, no need to count indices into effectLibrary
 const EffectId presetForPosition[6] = {
+  EFFECT_SWELL,
+  EFFECT_BITCRUSH,
   EFFECT_SHORT_DELAY,
   EFFECT_HELICOPTER,
-  EFFECT_BITCRUSH,
-  EFFECT_SQUARE_FUZZ,
-  EFFECT_SINE_RING_MOD,
+  EFFECT_AUTO_WAH,
   EFFECT_TREMOLO,
 };
 
